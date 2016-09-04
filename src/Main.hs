@@ -180,7 +180,7 @@ expr = mdo
         <#> match ";"
 
     parseAttrPath <- rule $ do
-            fmap mconcat (many ((parseAttr <|> parseStringAttr) <#> match "."))
+            fmap mconcat (many ((parseAttr <|> parseStringAttr) <!> match "."))
         <!> (parseAttr <|> parseStringAttr)
 
     parseAttrs <- rule $ do
@@ -498,13 +498,13 @@ expr = mdo
 
     parseExprSelect0 <- rule $ do
             parseExprSimple
-        <#>  match "."
-        <#>  parseAttrPath
+        <!> match "."
+        <!> parseAttrPath
 
     parseExprSelect1 <- rule $
         (    parseExprSimple
-        <#>  match "."
-        <#>  parseAttrPath
+        <!>  match "."
+        <!>  parseAttrPath
         )   <#> match "or"
             <#> parseExprSelect
 
