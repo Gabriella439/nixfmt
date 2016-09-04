@@ -17,13 +17,13 @@ import qualified Text.PrettyPrint
 main :: IO ()
 main = do
     str <- Data.Text.IO.getContents
-    let x@(solutions, report) = fullParses (parser expr) str
-    print x
+    let (solutions, report) = fullParses (parser expr) str
     case solutions of
-        [] -> fail "No valid parses!"
-        _  -> return ()
-
-infixr <#>
+        [] -> do
+            print report
+            mapM_ Data.Text.IO.putStrLn (expected report)
+            fail "No valid parses!"
+        x:_ -> putStrLn (Text.PrettyPrint.renderStyle (Text.PrettyPrint.style { Text.PrettyPrint.lineLength = 80 }) x)
 
 space :: Prod r Text Char Char
 space = satisfy Data.Char.isSpace <?> "space"
@@ -35,7 +35,8 @@ char :: Char -> Prod r Text Char Char
 char c = satisfy (== c) <?> ("'" <> Data.Text.singleton c <> "'")
 
 string :: String -> Prod r Text Char String
-string s = traverse char s <?> ("\"" <> Data.Text.pack s <> "\"")
+string s =
+    traverse (\c -> satisfy (== c)) s <?> ("\"" <> Data.Text.pack s <> "\"")
 
 anyChar :: Prod r Text Char Char
 anyChar = satisfy (\_ -> True) <?> "any character"
@@ -56,6 +57,8 @@ noneOf :: String -> Prod r Text Char Char
 noneOf cs =
     satisfy (`notElem` cs) <?> ("not one of " <> Data.Text.pack (show cs))
 
+infixr <#>, <!>, <@>
+
 (<#>) :: Prod r Text Char Doc -> Prod r Text Char Doc -> Prod r Text Char Doc
 x <#> y = adapt <$> x <*> spaces <*> y
   where
@@ -63,6 +66,9 @@ x <#> y = adapt <$> x <*> spaces <*> y
 
 (<!>) :: (Applicative f, Monoid m) => f m -> f m -> f m
 (<!>) = liftA2 mappend
+
+(<@>) :: Applicative f => f Doc -> f Doc -> f Doc
+x <@> y = (<+>) <$> x <*> y
 
 match :: String -> Prod r Text Char Doc
 match s = fmap Text.PrettyPrint.text (string s)
@@ -126,24 +132,8 @@ expr = mdo
         alt2
 
     parseFormals <- rule $ do
-            parseFormals0
-        <|> parseFormals1
-        <|> parseFormals2
-        <|> parseFormals3
-
-    parseFormals0 <- rule $ do
-            parseFormal
-        <#> match ","
-        <#> parseFormals
-
-    parseFormals1 <- rule $ do
-            parseFormal
-
-    parseFormals2 <- rule $ do
-            pure mempty
-
-    parseFormals3 <- rule $ do
-            match "..."
+            fmap Text.PrettyPrint.sep (many ((parseFormal <#> match ",") <* spaces))
+        <#> (parseFormal <|> match "..." <|> pure mempty)
 
     parseFormal <- rule $ do
             parseFormal0
@@ -158,73 +148,46 @@ expr = mdo
         <#> parseExpr
 
     parseBinds <- rule $ do
-            parseBinds0
-        <|> parseBinds1
-        <|> parseBinds2
-        <|> parseBinds3
+            fmap Text.PrettyPrint.sep (many (parseBind <* spaces))
 
-    parseBinds0 <- rule $ do
-            parseBinds
-        <#> parseAttrPath
-        <#> match "="
-        <#> parseExpr
-        <#> match ";"
+    parseBind <- rule $ do
+            parseBind0
+        <|> parseBind1
+        <|> parseBind2
 
-    parseBinds1 <- rule $ do
-            parseBinds
-        <#> match "inherit"
+    parseBind0 <- rule $ do
+        let adapt a _ b _ c _ d = (a <+> b <+> c) <> d
+        adapt
+            <$> parseAttrPath
+            <*> spaces
+            <*> match "="
+            <*> spaces
+            <*> parseExpr
+            <*> spaces
+            <*> match ";"
+
+    parseBind1 <- rule $ do
+            match "inherit"
         <#> parseAttrs
         <#> match ";"
 
-    parseBinds2 <- rule $ do
-            parseBinds
-        <#> match "inherit"
+    parseBind2 <- rule $ do
+            match "inherit"
         <#> match "("
         <#> parseExpr
         <#> match ")"
         <#> parseAttrs
         <#> match ";"
 
-    parseBinds3 <- rule $ do
-            pure mempty
-
     parseAttrPath <- rule $ do
-            parseAttrPath0
-        <|> parseAttrPath1
-        <|> parseAttrPath2
-        <|> parseAttrPath3
-
-    parseAttrPath0 <- rule $ do
-            parseAttrPath
-        <#> match "."
-        <#> parseAttr
-
-    parseAttrPath1 <- rule $ do
-            parseAttrPath
-        <#> match "."
-        <#> parseStringAttr
-
-    parseAttrPath2 <- rule $ do
-            parseAttr
-
-    parseAttrPath3 <- rule $ do
-            parseStringAttr
+            fmap mconcat (many ((parseAttr <|> parseStringAttr) <#> match "."))
+        <!> (parseAttr <|> parseStringAttr)
 
     parseAttrs <- rule $ do
-            parseAttrs0
-        <|> parseAttrs1
-        <|> parseAttrs2
-
-    parseAttrs0 <- rule $ do
-            parseAttrs
-        <#> parseAttr
-
-    parseAttrs1 <- rule $ do
-            parseAttrs
-        <#> parseStringAttr
-
-    parseAttrs2 <- rule $ do
-             pure mempty
+        let both = parseAttr <|> parseStringAttr
+        let alt0 = many (both <* space <* spaces)
+        let alt1 = (\xs x -> xs ++ [x]) <$> alt0 <*> both
+        fmap Text.PrettyPrint.sep alt1 <|> pure mempty
 
     parseAttr <- rule $ do
             parseAttr0
@@ -251,15 +214,9 @@ expr = mdo
         <#> match "}"
 
     parseExprList <- rule $ do
-            parseExprList0
-        <#> parseExprList1
-
-    parseExprList0 <- rule $ do
-            parseExprList
-        <#> parseExprSelect
-
-    parseExprList1 <- rule $ do
-            pure mempty
+        let alt0 = many (parseExprSelect <* space <* spaces)
+        let alt1 = (\xs x -> xs ++ [x]) <$> alt0 <*> parseExprSelect
+        fmap Text.PrettyPrint.sep alt1 <|> pure mempty
 
     parseStringParts <- rule $ do
             parseStringParts0
@@ -276,30 +233,11 @@ expr = mdo
             pure mempty
 
     parseStringPartsInterpolated <- rule $ do
-            parseStringPartsInterpolated0
-        <|> parseStringPartsInterpolated1
-        <|> parseStringPartsInterpolated2
-        <|> parseStringPartsInterpolated3
+            fmap mconcat (many parseStringPartInterpolated)
 
-    parseStringPartsInterpolated0 <- rule $ do
-            parseStringPartsInterpolated
-        <!> parseSTR
-
-    parseStringPartsInterpolated1 <- rule $
-            parseStringPartsInterpolated
-        <!> (   match "${"
-            <#> parseExpr
-            <#> match "}"
-            )
-
-    parseStringPartsInterpolated2 <- rule $ do
-            match "${"
-        <#> parseExpr
-        <#> match "}"
-
-    parseStringPartsInterpolated3 <- rule $
-            parseSTR
-        <!> (   match "${"
+    parseStringPartInterpolated <- rule $ do
+            parseChar
+        <|> (   match "${"
             <#> parseExpr
             <#> match "}"
             )
@@ -308,7 +246,7 @@ expr = mdo
             -- TODO: Fix
             parseSTR1
 
-    parseSTR1 <- rule $ do
+    parseChar <- rule $ do
         let alt0 =  fmap Text.PrettyPrint.char (noneOf "$\"\\")
         let alt1 =  fmap Text.PrettyPrint.char (char '$')
                 <!> fmap Text.PrettyPrint.char (noneOf "{\"\\")
@@ -317,7 +255,10 @@ expr = mdo
         let alt3 =  fmap Text.PrettyPrint.char (char '$')
                 <!> fmap Text.PrettyPrint.char (char '\\')
                 <!> fmap Text.PrettyPrint.char anyChar
-        fmap mconcat (some (alt0 <|> alt1 <|> alt2 <|> alt3))
+        alt0 <|> alt1 <|> alt2 <|> alt3
+
+    parseSTR1 <- rule $ do
+        fmap mconcat (some parseChar)
 
     parseIND_STR <- rule $ do
             parseIND_STR0
@@ -332,7 +273,7 @@ expr = mdo
                 <!> fmap Text.PrettyPrint.char (noneOf "{'")
         let alt2 =  fmap Text.PrettyPrint.char (char '\'')
                 <!> fmap Text.PrettyPrint.char (noneOf "'$")
-        fmap mconcat (some (alt0 <|> alt1 <|> alt2))
+        alt0 <|> alt1 <|> alt2
 
     parseIND_STR1 <- rule $ do
             fmap Text.PrettyPrint.text (string "''$")
@@ -360,15 +301,21 @@ expr = mdo
         <|> parseExprFunction7
 
     parseExprFunction0 <- rule $ do
-        let adapt a _ b _ c = a <+> b <+> c
+        let adapt a _ b _ c = (a <+> b) <> c
         adapt <$> parseID <*> spaces <*> match ":" <*> spaces <*> parseExprFunction
 
     parseExprFunction1 <- rule $ do
-            match "{"
-        <#> parseFormals
-        <#> match "}"
-        <#> match ":"
-        <#> parseExprFunction
+        let adapt a _ b _ c _ d _ e = (a <+> b <+> c) <> (d <+> e)
+        adapt
+            <$> match "{"
+            <*> spaces
+            <*> parseFormals
+            <*> spaces
+            <*> match "}"
+            <*> spaces
+            <*> match ":"
+            <*> spaces
+            <*> parseExprFunction
 
     parseExprFunction2 <- rule $ do
             match "{"
@@ -403,7 +350,7 @@ expr = mdo
     parseExprFunction6 <- rule $ do
             match "let"
         <#> parseBinds
-        <#> match "in"
+        <@> match "in"
         <#> parseExprFunction
 
     parseExprFunction7 <- rule $ do
@@ -551,15 +498,15 @@ expr = mdo
 
     parseExprSelect0 <- rule $ do
             parseExprSimple
-        <#> match "."
-        <#> parseAttrPath
+        <#>  match "."
+        <#>  parseAttrPath
 
-    parseExprSelect1 <- rule $ do
-            parseExprSimple
-        <#> match "."
-        <#> parseAttrPath
-        <#> match "or"
-        <#> parseExprSelect
+    parseExprSelect1 <- rule $
+        (    parseExprSimple
+        <#>  match "."
+        <#>  parseAttrPath
+        )   <#> match "or"
+            <#> parseExprSelect
 
     parseExprSelect2 <- rule $ do
             parseExprSimple
@@ -599,7 +546,7 @@ expr = mdo
 
     parseExprSimple04 <- rule $ do
             fmap Text.PrettyPrint.text (string "''")
-        <!> fmap Text.PrettyPrint.text (many space)
+        <!> fmap Text.PrettyPrint.text spaces
         <!> parseIndStringParts
         <!> fmap Text.PrettyPrint.text (string "''")
 
@@ -619,41 +566,36 @@ expr = mdo
             match "let"
         <#> match "{"
         <#> parseBinds
-        <#> match "}"
+        <@> match "}"
 
     parseExprSimple10 <- rule $ do
-            match "rec"
-        <#> match "{"
-        <#> parseBinds
-        <#> match "}"
+        let adapt a _ b _ = a <+> Text.PrettyPrint.braces b
+        adapt
+            <$> match "rec"
+            <*> spaces
+            <*> parseBinds
+            <*> match "}"
 
     parseExprSimple11 <- rule $ do
-            match "{"
-        <#> parseBinds
-        <#> match "}"
+        let adapt _ _ a _ = Text.PrettyPrint.braces a
+        adapt
+            <$> match "{"
+            <*> spaces
+            <*> parseBinds
+            <*> match "}"
 
     parseExprSimple12 <- rule $ do
-            match "["
-        <#> parseExprList
-        <#> match "]"
+        let adapt _ _ a _ _ = Text.PrettyPrint.brackets a
+        adapt
+            <$> match "["
+            <*> spaces
+            <*> parseExprList
+            <*> spaces
+            <*> match "]"
 
     parseIndStringParts <- rule $ do
-            parseIndStringParts0
-        <|> parseIndStringParts1
-        <|> parseIndStringParts2
-
-    parseIndStringParts0 <- rule $ do
-            parseIndStringParts
-        <!> parseIND_STR
-
-    parseIndStringParts1 <- rule $
-            parseIndStringParts
-        <!> (    match "${"
-            <#> parseExpr
-            <#> match "}"
-            )
-
-    parseIndStringParts2 <- rule $ do
-            pure mempty
+        let alt0 = match "${" <#> parseExpr <#> match "}"
+        let alt1 = fmap mconcat (many parseIND_STR)
+        fmap mconcat (many (alt1 <!> alt0)) <!> alt1
 
     return (spaces *> parseExpr <* spaces)
