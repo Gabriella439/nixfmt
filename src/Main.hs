@@ -21,7 +21,6 @@ main = do
     case solutions of
         [] -> do
             print report
-            mapM_ Data.Text.IO.putStrLn (expected report)
             fail "No valid parses!"
         x:_ -> putStrLn (Text.PrettyPrint.renderStyle (Text.PrettyPrint.style { Text.PrettyPrint.lineLength = 80 }) x)
 
